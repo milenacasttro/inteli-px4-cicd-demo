@@ -1,17 +1,32 @@
-# Test runner: Python + MAVSDK para conectar no PX4 SITL via MAVLink.
+# Test runner: Python + MAVSDK + pymavlink + pyulog para missão/extração de métricas.
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# procps fornece pgrep usado no entrypoint para checar mavsdk_server.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
 COPY libs/ libs/
-# tools/ entra no PR #2 (run_mission.py, extract_metrics.py, etc.)
+COPY tools/ tools/
+COPY missions/ missions/
 COPY tests/ tests/
 COPY pyproject.toml ./
+COPY docker/entrypoint-tester.sh /usr/local/bin/entrypoint-tester.sh
+RUN chmod +x /usr/local/bin/entrypoint-tester.sh
 
 ENV PYTHONPATH=/app
 
-# Default: rodar testes SITL com marker 'sitl'.
-CMD ["pytest", "tests/sitl", "-v", "-m", "sitl"]
+# Entrypoint sobe mavsdk_server em background (necessário pra MAVSDK Python
+# fazer upload de missão sem o bug do PR #1) e depois executa o CMD.
+ENTRYPOINT ["/usr/local/bin/entrypoint-tester.sh"]
+
+# Default: rodar teste de missão (PR #2). test_connection.py é o smoke do
+# PR #1 (pymavlink heartbeat), removido do default porque conflita com o
+# mavsdk_server por bind na mesma porta UDP 14540. Rodar standalone:
+#   MAVSDK_SERVER_DISABLE=1 pytest tests/sitl/test_connection.py
+CMD ["pytest", "tests/sitl/test_mission_square.py", "-v", "-m", "sitl"]

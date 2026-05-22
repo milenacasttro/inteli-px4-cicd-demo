@@ -1,22 +1,15 @@
-# PX4 SITL — apenas o autopiloto rodando, sem simulador gráfico.
-# PR #1 usa backend 'none_iris' (sem Gazebo) para validar plumbing MAVLink.
-# PR #2 adiciona Gazebo Garden + modelo gz_x500 para missão real.
+# PX4 SITL com jmavsim (Java simulator headless).
+# PR #2: tentamos Gazebo gz_x500 mas a imagem base px4-dev-simulation-jammy não
+# inclui Gazebo Garden/Harmonic (deps faltando no apt). Pivot para jmavsim que
+# já funcionava no PR #1; Gazebo entra em PR futuro com imagem base diferente.
+# Vide docs/adrs/ADR-007-jmavsim-no-pr2-gazebo-postponed.md
 FROM px4io/px4-dev-simulation-jammy:2024-05-18
 
 WORKDIR /workspace
 
 # Clone do PX4 dentro do container (não COPY do submódulo) porque o Makefile
-# do PX4 (linha 39) aborta se .git não existir, e o gitlink do submodule não
-# leva .git/ junto. Mantemos a tag sincronizada com .gitmodules do repo wrapper.
-# Quando o submódulo for atualizado (ADR-001 obriga novo ADR), atualizar a tag
-# abaixo também.
+# do PX4 (linha 39) aborta se .git não existir. Tag sincronizada com .gitmodules.
 ARG PX4_TAG=v1.16.2
-# Sem --depth 1 em nenhum dos clones: o script src/lib/version/px_update_git_header.py
-# do PX4 precisa de:
-# 1) tags no repo principal → git describe (corrigido com --single-branch)
-# 2) tags no submódulo NuttX (linha 132 do script lista tags 'nuttx-X.Y.Z')
-# Shallow clone do NuttX retorna lista vazia de tags → IndexError no [-1].
-# Custo: ~1GB no clone, mas buildcache do GHCR amortiza nos PRs seguintes.
 RUN git clone --single-branch --branch ${PX4_TAG} \
       https://github.com/PX4/PX4-Autopilot.git && \
     cd PX4-Autopilot && \
@@ -24,26 +17,21 @@ RUN git clone --single-branch --branch ${PX4_TAG} \
 
 WORKDIR /workspace/PX4-Autopilot
 
-# Build da SITL sem auto-launch (target padrão produz binário em build/px4_sitl_default/bin/px4)
+# Build do firmware SITL (binário /build/px4_sitl_default/bin/px4).
 RUN make px4_sitl_default
 
-# Pre-build do jmavsim (Java simulator headless) para evitar delay no CMD.
-# Como jmavsim_iris precisa de PX4 rodando, fazemos só o build do jar via gradle.
+# Pre-build do jar do jmavsim (Java sim leve, sem GPU/X11).
 RUN cd Tools/simulation/jmavsim/jMAVSim && \
     ant create_run_jar copy_res 2>&1 | tail -3
 
-# MAVLink (PX4 v1.16 init.d-posix/px4-rc.mavlink):
-# 14556 → input promíscuo (aceita qualquer GCS, reciprocate pro source IP)
-# 14557 → input do canal "onboard"; PX4 manda telemetria pra 14540 (localhost por padrão)
+# MAVLink ports (rc.mavlink v1.16):
+# 14550 (GCS out) / 14580 (Onboard in) / 14556 (promíscuo) / 14540 (Onboard out)
 EXPOSE 14550/udp 14556/udp 14557/udp 14580/udp
 
-# Healthcheck: PX4 está rodando como processo (start-period generoso pra inicialização)
+# Healthcheck: PX4 process running. start-period generoso pra jmavsim init.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=90s --retries=12 \
     CMD pgrep -x px4 >/dev/null || exit 1
 
-# Launch da SITL com jmavsim (simulador Java leve, sem GUI quando HEADLESS=1).
-# none_iris não funciona standalone — fica travado esperando simulador externo
-# no TCP 4560. jmavsim é o simulador "free" mais leve do ecosistema PX4 e roda
-# bem em CI (sem GPU, sem X11). Para Gazebo (modelo gz_x500), espere PR #2.
+# Launch SITL + jmavsim headless. HEADLESS=1 desabilita GUI.
 ENV HEADLESS=1
 CMD ["make", "px4_sitl", "jmavsim_iris"]

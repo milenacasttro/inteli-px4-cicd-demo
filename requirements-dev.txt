@@ -7,3 +7,4 @@ black==24.10.0
 mypy==1.14.1
 mavsdk==2.8.4
 pymavlink==2.4.49
+types-PyYAML==6.0.12.20250915

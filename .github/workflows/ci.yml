@@ -33,13 +33,13 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Ruff
-        run: ruff check libs/ tests/
+        run: ruff check libs/ tools/ tests/
 
       - name: Black
-        run: black --check libs/ tests/
+        run: black --check libs/ tools/ tests/
 
       - name: Mypy
-        run: mypy libs/
+        run: mypy libs/ tools/
 
       - name: Pytest unit + coverage
         run: pytest tests/unit -v
@@ -53,11 +53,11 @@ jobs:
   sonar-scan:
     needs: python-quality
     runs-on: ubuntu-latest
-    continue-on-error: true # PR #1: análise sem enforcement; PR #4 ativa enforcement
+    continue-on-error: true # PR #4 ativa enforcement (vide spec)
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Sonar precisa de histórico para git blame
+          fetch-depth: 0
           submodules: false
 
       - name: Download coverage XML
@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: false # Dockerfile.sitl clona PX4 internamente (Makefile exige .git real)
+          submodules: false # Dockerfile.sitl clona PX4 internamente
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -104,14 +104,15 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-  deploy-dev:
+  mission-test:
+    # Unifica o antigo deploy-dev (smoke) com o novo mission-test (PR #2):
+    # ambos rodavam o mesmo compose. Aqui executamos missão square_50m no
+    # SITL (jmavsim), extraímos KPIs e publicamos metrics.json + comentário
+    # no PR. Self-hosted (VM srv-simulador) — GitHub-hosted pendura no
+    # cleanup do jmavsim/Java.
     needs: sitl-build
-    # Runner self-hosted (VM srv-simulador): GitHub-hosted ficava preso ao
-    # parar jmavsim Java (não responde a SIGTERM), causando timeout no job
-    # mesmo após o teste passar. Self-hosted permite cleanup mais robusto e
-    # cache local da imagem SITL.
     runs-on: [self-hosted, px4-sitl]
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: dev
     steps:
       - uses: actions/checkout@v4
@@ -125,26 +126,64 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull SITL image
-        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-
-      - name: Run smoke test (compose)
+      - name: Run mission compose
         env:
           SITL_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
           set +e
-          # --timeout 5: jmavsim Java + PX4 não respondem rápido a SIGTERM;
-          # corta esperar shutdown limpo após tester sair com exit code.
+          # Mesma estratégia do deploy-dev: shared netns + cleanup robusto.
+          # `tester` agora executa pytest tests/sitl (smoke + mission).
           docker compose -f docker-compose.ci.yml up \
             --build \
             --abort-on-container-exit \
             --exit-code-from tester \
             --timeout 5
           EXIT=$?
+          # Copia reports gerados pelo container tester pra workspace antes do down.
+          docker compose -f docker-compose.ci.yml cp tester:/app/reports ./reports 2>/dev/null || true
           docker compose -f docker-compose.ci.yml kill || true
           docker compose -f docker-compose.ci.yml rm -f -v || true
           exit $EXIT
 
-      - name: SITL logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.ci.yml logs sitl 2>&1 | tail -100 || true
+      - name: Upload metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mission-metrics
+          path: reports/
+          if-no-files-found: warn
+
+      - name: Comment metrics on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const metricsPath = 'reports/metrics.json';
+            if (!fs.existsSync(metricsPath)) {
+              console.log('reports/metrics.json não encontrado, skip comentário');
+              return;
+            }
+            const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+            const body = [
+              '## 📊 Métricas da missão (square_50m)',
+              '',
+              '| Métrica | Valor |',
+              '|---|---|',
+              `| Duração | ${m.mission_duration_s}s |`,
+              `| Altitude máx | ${m.max_altitude_m}m |`,
+              `| Altitude média | ${m.mean_altitude_m}m |`,
+              `| Desvio padrão altitude cruzeiro | ${m.std_altitude_cruise_m}m |`,
+              `| Aceleração máx | ${m.max_acceleration_m_s2} m/s² |`,
+              `| Maior queda bateria | ${m.max_battery_drop_pct}% |`,
+              `| Amostras | ${m.n_samples} |`,
+              '',
+              '_Quality gates obrigatórios entram no PR #4 (Aula 10)._'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

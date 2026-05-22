@@ -4,6 +4,9 @@
 services:
   sitl:
     image: ${SITL_IMAGE:?SITL_IMAGE must be set}
+    volumes:
+      # Volume compartilhado pra ULogs: PX4 escreve aqui, tester lê via ULOG_DIR.
+      - ulogs:/workspace/PX4-Autopilot/build/px4_sitl_default/rootfs/log
     healthcheck:
       test: ["CMD-SHELL", "pgrep -x px4 || exit 1"]
       interval: 5s
@@ -26,3 +29,10 @@ services:
         condition: service_healthy
     environment:
       - MAVLINK_URL=udpin:127.0.0.1:14540
+      - MAVSDK_SERVER_URL=udp://:14540
+      - ULOG_DIR=/ulogs
+    volumes:
+      - ulogs:/ulogs:ro
+
+volumes:
+  ulogs:

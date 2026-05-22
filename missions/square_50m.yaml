@@ -1,0 +1,59 @@
+# Missão de referência do PR #2 — quadrado de 50m a 10m de altitude.
+# Pioneer Plaza, San Francisco (default PX4 SITL home). 4 waypoints, RTL no fim.
+# Coordenadas:
+#   home → WP1 → WP2 → WP3 → WP4 → RTL (home)
+#   quadrado de 50m em torno do home, sentido horário visto de cima.
+
+name: square_50m
+description: |
+  Decolagem vertical até 10m, voa em quadrado de 50m de lado, retorna pra home.
+  Usado pra extrair métricas baseline de trajetória, altitude e energia.
+
+# Parâmetros gerais
+takeoff_altitude_m: 10.0
+cruise_speed_m_s: 5.0
+acceptance_radius_m: 2.0
+
+# Home (default PX4 SITL — coincide com posição inicial do gz_x500)
+home:
+  latitude: 47.397742
+  longitude: 8.545594
+
+# Waypoints relativos ao home, em coordenadas NED (north_m, east_m, alt_m)
+waypoints:
+  - name: takeoff
+    type: takeoff
+    altitude_m: 10.0
+
+  - name: wp1_north
+    type: waypoint
+    north_m: 50.0
+    east_m: 0.0
+    altitude_m: 10.0
+
+  - name: wp2_northeast
+    type: waypoint
+    north_m: 50.0
+    east_m: 50.0
+    altitude_m: 10.0
+
+  - name: wp3_east
+    type: waypoint
+    north_m: 0.0
+    east_m: 50.0
+    altitude_m: 10.0
+
+  - name: wp4_home_align
+    type: waypoint
+    north_m: 0.0
+    east_m: 0.0
+    altitude_m: 10.0
+
+  - name: return_to_launch
+    type: rtl
+
+# Limites duros — missão é abortada se exceder
+limits:
+  max_duration_s: 180
+  max_altitude_m: 30.0
+  geofence_radius_m: 100.0
